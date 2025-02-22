@@ -31,15 +31,7 @@ class Setting(BaseModel):
     default: str
     required: bool
 
-class IntegrationSpec(BaseModel):
-    name: str
-    description: str
-    interval: int
-    target_url: str
-    tick_url: str
-    settings: List[Setting]
-
-@app.get("/integration.json", response_model=IntegrationSpec)
+@app.get("/integration.json")
 def get_integration_spec():
     return {
         "data": {
