@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
@@ -30,6 +30,11 @@ class Setting(BaseModel):
     type: str
     default: str
     required: bool
+
+class MonitorPayload(BaseModel):
+    channel_id: str
+    return_url: str
+    settings: List[Setting]
 
 @app.get("/integration.json")
 def get_integration_spec():
@@ -75,11 +80,12 @@ def fetch_file_content(url: str, headers: dict = None):
         return response.json().get('content', '')
     return None
 
-@app.post("/tick")
-def tick_handler(repo_url: str, telex_webhook_url: str):
+@app.post("/tick", status_code=202)
+def tick_handler(payload: MonitorPayload, background_tasks: BackgroundTasks):
     """Checks the latest PR for requirements.txt changes and notifies Telex if changes exist."""
 
-    parts = repo_url.rstrip('/').split('/')
+    github_url = [s.default for s in payload.settings if s.label.startswith("Github")][0]
+    parts = github_url.rstrip('/').split('/')
     if len(parts) < 2:
         raise HTTPException(status_code=400, detail="Invalid GitHub repository URL")
     
@@ -92,9 +98,6 @@ def tick_handler(repo_url: str, telex_webhook_url: str):
         raise HTTPException(status_code=response.status_code, detail="Failed to fetch pull requests")
 
     pull_requests = response.json()
-
-    if not pull_requests:
-        return {"status": "success", "message": "No open pull requests found"}
 
     latest_pr = pull_requests[0]
     pr_number = latest_pr['number']
@@ -109,6 +112,13 @@ def tick_handler(repo_url: str, telex_webhook_url: str):
 
     if pr_file_content and main_file_content and pr_file_content != main_file_content:
         message = f"Latest Pull Request #{pr_number} contains changes to requirements.txt."
-        requests.post(telex_webhook_url, json={"message": message})
+        requests.post(payload.return_url, json={"message": message})
 
-    return {"status": "success", "message": f"Checked latest PR #{pr_number} for requirements.txt changes"}
+    data = {
+        "message": message,
+        "username": "Uptime Monitor",
+        "event_name": "Uptime Check",
+        "status": "error"
+    }
+
+    return {"status": "accepted"}
