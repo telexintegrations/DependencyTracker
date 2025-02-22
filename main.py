@@ -83,42 +83,41 @@ def fetch_file_content(url: str, headers: dict = None):
 @app.post("/tick", status_code=202)
 def tick_handler(payload: MonitorPayload, background_tasks: BackgroundTasks):
     """Checks the latest PR for requirements.txt changes and notifies Telex if changes exist."""
-
-    github_url = [s.default for s in payload.settings if s.label.startswith("Github")][0]
-    parts = github_url.rstrip('/').split('/')
-    if len(parts) < 2:
-        raise HTTPException(status_code=400, detail="Invalid GitHub repository URL")
     
-    username, repo_name = parts[-2], parts[-1]
+    def process_monitoring():
+        github_url = [s.default for s in payload.settings if s.label.startswith("Github")][0]
+        parts = github_url.rstrip('/').split('/')
+        if len(parts) < 2:
+            return
+        
+        username, repo_name = parts[-2], parts[-1]
 
-    pulls_url = f'https://api.github.com/repos/{username}/{repo_name}/pulls?sort=updated&direction=desc&per_page=1'
-    response = requests.get(pulls_url)
+        pulls_url = f'https://api.github.com/repos/{username}/{repo_name}/pulls?sort=updated&direction=desc&per_page=1'
+        response = requests.get(pulls_url)
 
-    if response.status_code != 200:
-        raise HTTPException(status_code=response.status_code, detail="Failed to fetch pull requests")
+        if response.status_code != 200:
+            return
 
-    pull_requests = response.json()
+        pull_requests = response.json()
+        if not pull_requests:
+            return
+        
+        latest_pr = pull_requests[0]
+        pr_number = latest_pr['number']
+        pr_branch = latest_pr['head']['ref']
 
-    latest_pr = pull_requests[0]
-    pr_number = latest_pr['number']
-    pr_branch = latest_pr['head']['ref']
+        headers = {"Accept": "application/vnd.github.v3+json"}
+        pr_file_url = f'https://api.github.com/repos/{username}/{repo_name}/contents/requirements.txt?ref={pr_branch}'
+        main_file_url = f'https://api.github.com/repos/{username}/{repo_name}/contents/requirements.txt?ref=main'
 
-    headers = {"Accept": "application/vnd.github.v3+json"}
-    pr_file_url = f'https://api.github.com/repos/{username}/{repo_name}/contents/requirements.txt?ref={pr_branch}'
-    main_file_url = f'https://api.github.com/repos/{username}/{repo_name}/contents/requirements.txt?ref=main'
+        pr_file_content = fetch_file_content(pr_file_url, headers)
+        main_file_content = fetch_file_content(main_file_url, headers)
 
-    pr_file_content = fetch_file_content(pr_file_url, headers)
-    main_file_content = fetch_file_content(main_file_url, headers)
+        if pr_file_content and main_file_content and pr_file_content != main_file_content:
+            message = f"Latest Pull Request #{pr_number} contains changes to requirements.txt."
+            requests.post(payload.return_url, json={"message": message})
 
-    if pr_file_content and main_file_content and pr_file_content != main_file_content:
-        message = f"Latest Pull Request #{pr_number} contains changes to requirements.txt."
-        requests.post(payload.return_url, json={"message": message})
-
-    data = {
-        "message": message,
-        "username": "Uptime Monitor",
-        "event_name": "Uptime Check",
-        "status": "error"
-    }
+    # Add background task
+    background_tasks.add_task(process_monitoring)
 
     return {"status": "accepted"}
